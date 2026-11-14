@@ -205,6 +205,16 @@
   var SLOT_INDEX = {};
   SLOTS.forEach(function (s, i) { SLOT_INDEX[s.id] = i; });
 
+  // 시간대별 기준 시각(분) — 2시간(120분) 이상 떨어져야 하는 조합 판정에 사용
+  var SLOT_MIN = {
+    "morning-empty": 7 * 60,      // 07:00
+    "morning": 8 * 60,            // 08:00
+    "lunch": 12 * 60 + 30,        // 12:30
+    "dinner": 19 * 60,            // 19:00
+    "bedtime": 22 * 60 + 30,      // 22:30
+  };
+  var MIN_GAP = 120;
+
   // 2시간 이상 떨어뜨려야 하는 조합 (같은/이웃 시간대면 충돌)
   var SPACING = [
     ["iron", "calcium"],
@@ -498,6 +508,7 @@
   /* --------------------------------------------------------------- 상태 */
   var selected = new Set();
   var lastResult = null;
+  var barInView = false;
 
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
   var $$ = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
@@ -564,6 +575,10 @@
       : n < 2 ? "한 개만으로도 분석할 수 있어요" : "분석할 준비가 됐어요";
     $("#analyzeBtn").disabled = n === 0;
 
+    // 하단 바: 체크리스트가 화면에 있을 때만 보이게
+    var bar = document.querySelector(".actionbar");
+    if (bar) bar.classList.toggle("is-on", barInView);
+
     // 프리셋 활성 표시
     $$(".preset").forEach(function (btn) {
       var p = PRESETS[btn.dataset.preset];
@@ -611,46 +626,83 @@
   /* ------------------------------------------------------------- 시간표 */
   function buildSchedule(set) {
     var chosen = ITEMS.filter(function (it) { return set.has(it.id); });
-    chosen.sort(function (a, b) { return (PRIORITY[a.id] || 50) - (PRIORITY[b.id] || 50); });
+
+    // 간격 제약이 많은(자유도가 낮은) 항목부터 자리를 잡아야 충돌이 줄어든다
+    function partners(it) {
+      return chosen.filter(function (o) {
+        return o.id !== it.id && SPACING_MAP[it.id + "|" + o.id];
+      }).length;
+    }
+    chosen.forEach(function (it) { it._partners = partners(it); });
+    chosen.sort(function (a, b) {
+      return (b._partners - a._partners) || ((PRIORITY[a.id] || 50) - (PRIORITY[b.id] || 50));
+    });
 
     var assign = {};      // id -> slot
     var slotItems = {};   // slot -> [id]
+    var forced = [];      // 자리가 없어 충돌을 감수한 항목
     SLOTS.forEach(function (s) { slotItems[s.id] = []; });
 
-    function canPlace(item, slotId) {
-      if (slotItems[slotId].length >= 5) return false;
-      var idx = SLOT_INDEX[slotId];
-      for (var i = 0; i < slotItems[slotId].length; i++) {
-        var other = slotItems[slotId][i];
-        if (SPACING_MAP[item.id + "|" + other]) return false;
-      }
-      // 이웃 시간대(1칸 차이)도 2시간이 안 되므로 충돌
-      var neighbours = [idx - 1, idx + 1];
-      for (var j = 0; j < neighbours.length; j++) {
-        var ni = neighbours[j];
-        if (ni < 0 || ni >= SLOTS.length) continue;
-        var list = slotItems[SLOTS[ni].id];
-        for (var k = 0; k < list.length; k++) {
-          if (SPACING_MAP[item.id + "|" + list[k]]) return false;
-        }
+    function gapOK(item, slotId) {
+      var mins = SLOT_MIN[slotId];
+      if (mins === undefined) return true; // 주 1회 슬롯은 시간 충돌 없음
+      for (var id in assign) {
+        if (!Object.prototype.hasOwnProperty.call(assign, id)) continue;
+        if (!SPACING_MAP[item.id + "|" + id]) continue;
+        var otherMin = SLOT_MIN[assign[id]];
+        if (otherMin === undefined) continue;
+        if (Math.abs(mins - otherMin) < MIN_GAP) return false;
       }
       return true;
     }
 
-    function place(item, slotId) {
-      assign[item.id] = slotId;
-      slotItems[slotId].push(item.id);
+    function slotConflicts(item, slotId) {
+      var n = 0;
+      slotItems[slotId].forEach(function (other) {
+        if (SPACING_MAP[item.id + "|" + other]) n++;
+      });
+      return n;
+    }
+
+    function canPlace(item, slotId) {
+      if (slotItems[slotId].length >= 5) return false;
+      if (!gapOK(item, slotId)) return false;
+      return slotConflicts(item, slotId) === 0;
+    }
+
+    function preferFor(item) {
+      // 짝을 맞춰야 하는 항목은 먼저 배치된 짝의 시간대로 따라간다
+      if (item.id === "copper" && assign.zinc) return [assign.zinc].concat(item.prefer);
+      if (item.id === "k2" && assign.d3) return [assign.d3].concat(item.prefer);
+      if (item.id === "vitc" && assign.iron === "morning-empty") {
+        return ["morning-empty", "morning"].concat(item.prefer);
+      }
+      return item.prefer;
     }
 
     chosen.forEach(function (item) {
-      var prefer = item.prefer;
+      var prefer = preferFor(item);
       for (var i = 0; i < prefer.length; i++) {
-        if (canPlace(item, prefer[i])) { place(item, prefer[i]); return; }
+        if (canPlace(item, prefer[i])) {
+          assign[item.id] = prefer[i];
+          slotItems[prefer[i]].push(item.id);
+          return;
+        }
       }
-      // 자리가 없으면 마지막 희망 시간대에 그대로 (충돌은 결과에서 안내)
-      place(item, prefer[prefer.length - 1]);
+      // 모든 희망 시간대가 막혔을 때: 충돌이 가장 적은 시간대에 배치하고 표시
+      var best = null, bestScore = Infinity;
+      prefer.forEach(function (slotId) {
+        if (slotItems[slotId].length >= 5) return;
+        var score = slotConflicts(item, slotId) * 10 + slotItems[slotId].length;
+        if (score < bestScore) { bestScore = score; best = slotId; }
+      });
+      if (!best) best = prefer[prefer.length - 1];
+      assign[item.id] = best;
+      slotItems[best].push(item.id);
+      if (slotConflicts(item, best) > 0) forced.push({ id: item.id, slot: best });
     });
 
+    slotItems._forced = forced;
     return slotItems;
   }
 
@@ -665,6 +717,16 @@
     }
     if (ids.length >= 4) tips.push(ids.length + "종을 한 번에 — 물 한 컵과 함께, 미네랄은 다음 끼니로 나누는 게 좋아요.");
     if (s.has("mounjaro") || s.has("wegovy")) tips.push("주사는 같은 요일·같은 시간. 식사와 무관합니다.");
+    // 같은 시간대에 2시간 간격이 필요한 조합이 남아 있는지
+    for (var i = 0; i < ids.length; i++) {
+      for (var j = i + 1; j < ids.length; j++) {
+        if (SPACING_MAP[ids[i] + "|" + ids[j]]) {
+          tips.push("⚠️ 이 시간대에 2시간 간격이 필요한 항목이 함께 있어요 — 하나를 다른 끼니로 옮기세요.");
+          i = ids.length;
+          break;
+        }
+      }
+    }
     return tips;
   }
 
@@ -740,17 +802,17 @@
 
     // 규칙 그룹
     var groups = [
-      { level: "red", label: "🔴 주의 · 중복 경고", empty: "지금 조합에서 겹치는 성분은 찾지 못했어요." },
-      { level: "amber", label: "🟡 복용 간격 분리 권장", empty: "지금 조합은 시간을 나눌 필요가 없어요." },
-      { level: "green", label: "🟢 시너지 조합", empty: "같이 먹으면 좋은 조합은 아직 없어요. 항목을 더 골라보세요." },
+      { level: "red", badge: "주의", label: "겹치는 성분 · 중복 경고", empty: "지금 조합에서 겹치는 성분은 찾지 못했어요." },
+      { level: "amber", badge: "간격", label: "복용 간격 분리 권장", empty: "지금 조합은 시간을 나눌 필요가 없어요." },
+      { level: "green", badge: "시너지", label: "같이 먹으면 좋은 조합", empty: "같이 먹으면 좋은 조합은 아직 없어요. 항목을 더 골라보세요." },
     ];
     var html = "";
     groups.forEach(function (g) {
       var list = hits[g.level];
       html += "<div class='rule-group rule-group--" + g.level + "'>" +
         "<div class='rule-group__head'>" +
-          "<span class='rule-group__badge'>" + (g.level === "red" ? "주의" : g.level === "amber" ? "간격" : "시너지") + "</span>" +
-          "<h3 class='rule-group__title'>" + g.label.replace(/^[^\s]+\s/, "") + "</h3>" +
+          "<span class='rule-group__badge'>" + g.badge + "</span>" +
+          "<h3 class='rule-group__title'>" + g.label + "</h3>" +
           "<span class='rule-group__count'>" + list.length + "건</span>" +
         "</div>";
       if (!list.length) {
@@ -922,8 +984,20 @@
       btn.addEventListener("click", function () { applyPreset(btn.dataset.preset); });
     });
 
-    var yearEl = $("#year");
-    if (yearEl) yearEl.textContent = String(new Date().getFullYear());
+    var checklistEl = $("#checklist");
+    var barEl = document.querySelector(".actionbar");
+    if (checklistEl && barEl && "IntersectionObserver" in window) {
+      new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          barInView = e.isIntersecting;
+          barEl.classList.toggle("is-on", barInView);
+        });
+      }, { threshold: 0, rootMargin: "0px 0px -130px 0px" }).observe(checklistEl);
+    } else if (barEl) {
+      barEl.classList.add("is-on");
+    }
+
+    var yearEl = $("#year");    if (yearEl) yearEl.textContent = String(new Date().getFullYear());
 
     var stat = $("#statRules");
     if (stat) stat.textContent = String(RULES.length);
