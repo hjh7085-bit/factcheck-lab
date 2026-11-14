@@ -510,6 +510,13 @@
   var lastResult = null;
   var barInView = false;
 
+  // 하단 실행 바: 체크리스트가 헤더 아래로 화면에 들어왔을 때만 보인다.
+  // (결과 섹션으로 내려가면 체크리스트가 헤더에 가려지며 저절로 숨는다)
+  function syncActionBar() {
+    var bar = document.querySelector(".actionbar");
+    if (bar) bar.classList.toggle("is-on", barInView);
+  }
+
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
   var $$ = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
   function itemById(id) {
@@ -576,8 +583,7 @@
     $("#analyzeBtn").disabled = n === 0;
 
     // 하단 바: 체크리스트가 화면에 있을 때만 보이게
-    var bar = document.querySelector(".actionbar");
-    if (bar) bar.classList.toggle("is-on", barInView);
+    syncActionBar();
 
     // 프리셋 활성 표시
     $$(".preset").forEach(function (btn) {
@@ -853,7 +859,10 @@
     var el = $("#result");
     if (!el) return;
     var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    el.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+    var header = document.querySelector(".site-header");
+    var offset = (header ? header.getBoundingClientRect().height : 62) + 12;
+    var top = el.getBoundingClientRect().top + window.pageYOffset - offset;
+    window.scrollTo({ top: Math.max(0, top), behavior: reduce ? "auto" : "smooth" });
   }
 
   /* --------------------------------------------------------------- 칼럼 */
@@ -987,12 +996,13 @@
     var checklistEl = $("#checklist");
     var barEl = document.querySelector(".actionbar");
     if (checklistEl && barEl && "IntersectionObserver" in window) {
+      // 위쪽 -74px: 고정 헤더에 가려진 부분만 남았을 때는 '보이는 것으로 치지 않는다'
       new IntersectionObserver(function (entries) {
         entries.forEach(function (e) {
           barInView = e.isIntersecting;
-          barEl.classList.toggle("is-on", barInView);
+          syncActionBar();
         });
-      }, { threshold: 0, rootMargin: "0px 0px -130px 0px" }).observe(checklistEl);
+      }, { threshold: 0, rootMargin: "-74px 0px -130px 0px" }).observe(checklistEl);
     } else if (barEl) {
       barEl.classList.add("is-on");
     }

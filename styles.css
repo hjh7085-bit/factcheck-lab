@@ -493,10 +493,13 @@ html[data-theme="dark"] .theme-toggle__sun { display: block; }
 
 /* ------------------------------------------------------------- actionbar */
 .actionbar {
-  position: sticky;
+  /* fixed: 체크리스트가 화면을 벗어날 때 바가 사라져도 문서 높이가 변하지 않게 한다.
+     (sticky + display:none 이면 결과 섹션이 위로 당겨져 제목이 헤더에 가렸다) */
+  position: fixed;
+  left: 0;
+  right: 0;
   bottom: 0;
   z-index: 30;
-  margin-top: 30px;
   padding: 12px 0 calc(12px + env(safe-area-inset-bottom, 0px));
   background: color-mix(in srgb, var(--surface) 94%, transparent);
   backdrop-filter: saturate(160%) blur(14px);
